@@ -1,10 +1,14 @@
 from pyspark.sql import SparkSession
 from pyspark.ml import PipelineModel
-from pyspark.sql.functions import col, from_json
+from pyspark.sql.functions import col, from_json, to_json, struct
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from src.config import Config
+from src.utils.logger import get_logger
+import os
 
 import pyspark
+
+logger = get_logger("AnomalyGate.Stream")
 
 def run_pipeline():
     spark_version = pyspark.__version__
@@ -12,15 +16,15 @@ def run_pipeline():
     kafka_pkg = f"org.apache.spark:spark-sql-kafka-0-10_{scala_version}:{spark_version}"
 
     spark = SparkSession.builder \
-        .appName("SecurityLogNoiseFilter_Pipeline") \
+        .appName("AnomalyGate_Pipeline") \
         .config("spark.jars.packages", kafka_pkg) \
         .getOrCreate()
         
-    print(f"Loading pre-trained ML model from {Config.MODEL_PATH}...")
+    logger.info(f"Loading pre-trained ML model from {Config.MODEL_PATH}...")
     try:
         model = PipelineModel.load(Config.MODEL_PATH)
     except Exception as e:
-        print(f"Failed to load model. Error: {e}")
+        logger.error(f"Failed to load model. Did you run 'make train'? Error: {e}")
         return
 
     schema = StructType([
@@ -32,7 +36,7 @@ def run_pipeline():
         StructField("severity", StringType(), True)
     ])
 
-    print(f"Connecting to Kafka stream at {Config.KAFKA_BROKER} on topic {Config.KAFKA_TOPIC}...")
+    logger.info(f"Connecting to Kafka stream at {Config.KAFKA_BROKER} on topic {Config.KAFKA_TOPIC}...")
     kafka_df = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", Config.KAFKA_BROKER) \
@@ -44,6 +48,7 @@ def run_pipeline():
         .select(from_json(col("json_string"), schema).alias("data")) \
         .select("data.*")
     
+    # Run the ML model to filter out noise
     predictions = model.transform(parsed_df)
     filtered_df = predictions.filter(col("prediction") == 1.0)
     
@@ -51,22 +56,21 @@ def run_pipeline():
         "timestamp", "source_ip", "event_type", "action", "bytes_transferred", "severity"
     )
     
-    print(f"Starting stream to output... (Skipping direct ES Connector due to Scala ClassLoader conflicts)")
+    logger.info(f"Routing critical logs to SIEM topic: {Config.KAFKA_OUTPUT_TOPIC}...")
     
-    # Writing to Console for local verification
-    query = siem_payload_df.writeStream \
-        .outputMode("append") \
-        .format("console") \
-        .start()
-        
-    # In production, to avoid Elasticsearch JAR conflicts inside PySpark, 
-    # it is best practice to output to a new Kafka topic and use Logstash or Kafka Connect to sink to ES.
-    # kafka_query = siem_payload_df.selectExpr("CAST(timestamp AS STRING) AS key", "to_json(struct(*)) AS value") \
-    #    .writeStream \
-    #    .format("kafka") \
-    #    .option("kafka.bootstrap.servers", Config.KAFKA_BROKER) \
-    #    .option("topic", "siem-critical-logs") \
-    #    .option("checkpointLocation", "/tmp/spark_checkpoints/kafka_sink") \
-    #    .start()
+    # Production Sink: Write to Output Kafka Topic
+    checkpoint_dir = os.path.join(Config.PROJECT_ROOT, "checkpoints", "kafka_sink")
+    
+    query = siem_payload_df.select(
+        col("timestamp").alias("key"),
+        to_json(struct("*")).alias("value")
+    ) \
+    .writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", Config.KAFKA_BROKER) \
+    .option("topic", Config.KAFKA_OUTPUT_TOPIC) \
+    .option("checkpointLocation", checkpoint_dir) \
+    .start()
 
+    logger.info("Stream processing started. Awaiting termination...")
     query.awaitTermination()
