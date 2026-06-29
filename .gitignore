@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Project Data and Models
+sample_logs.json
+models/
+
+# macOS specific
+.DS_Store
+
+# IDE and Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
