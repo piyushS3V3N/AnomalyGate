@@ -9,7 +9,8 @@ env/
 ENV/
 env.bak/
 venv.bak/
-
+.env
+checkpoints
 # Project Data and Models
 sample_logs.json
 models/
