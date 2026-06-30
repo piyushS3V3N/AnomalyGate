@@ -13,7 +13,8 @@ def main():
     subparsers.add_parser("train", help="Train the PySpark ML Model")
     
     # Run pipeline command
-    subparsers.add_parser("run", help="Run the streaming pipeline (Kafka -> PySpark -> Elasticsearch)")
+    run_parser = subparsers.add_parser("run", help="Run the streaming pipeline (Kafka -> PySpark -> Elasticsearch)")
+    run_parser.add_argument("--once", action="store_true", help="Process currently available data and exit")
 
     args = parser.parse_args()
 
@@ -26,7 +27,7 @@ def main():
         train_model()
     elif args.command == "run":
         from src.pipeline.stream import run_pipeline
-        run_pipeline()
+        run_pipeline(once=args.once)
     else:
         parser.print_help()
         sys.exit(1)

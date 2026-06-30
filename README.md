@@ -79,11 +79,10 @@ make train
 ### 5. Simulate the Live Stream
 Because the streaming pipeline expects data via Kafka, publish the generated logs into the broker:
 ```bash
-docker exec -i aslnfs-kafka-1 kafka-console-producer \
-  --broker-list localhost:9092 \
-  --topic raw-security-logs < sample_logs.json
+make feed
 ```
-*(If your Docker Compose project name is different, adjust `aslnfs-kafka-1` accordingly).*
+*(Alternatively, you can run the direct container-agnostic command: `docker compose exec -T kafka kafka-console-producer --bootstrap-server localhost:9092 --topic raw-security-logs < sample_logs.json`).*
+
 
 ### 6. Run the AnomalyGate Pipeline
 Start the PySpark Structured Streaming job. It will connect to Kafka, apply the ML model in real-time, filter the noise, and sink the critical logs back into the output Kafka topic.
@@ -91,7 +90,15 @@ Start the PySpark Structured Streaming job. It will connect to Kafka, apply the 
 make run
 ```
 
+### 7. Consume & Verify Output
+To verify that the critical anomalies are successfully routed and stored as complete raw JSON payloads in the output topic, run:
+```bash
+make consume
+```
+*(This consumes up to the first 10 messages from the beginning of `siem-critical-logs` and displays them).*
+
 ---
+
 
 ## Testing & Code Quality
 
