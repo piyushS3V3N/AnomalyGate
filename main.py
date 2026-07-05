@@ -16,6 +16,9 @@ def main():
     run_parser = subparsers.add_parser("run", help="Run the streaming pipeline (Kafka -> PySpark -> Elasticsearch)")
     run_parser.add_argument("--once", action="store_true", help="Process currently available data and exit")
 
+    # Flaggings viewer command
+    subparsers.add_parser("flaggings", help="Stream and view flagged anomalies in real-time")
+
     args = parser.parse_args()
 
     if args.command == "generate":
@@ -28,6 +31,9 @@ def main():
     elif args.command == "run":
         from src.pipeline.stream import run_pipeline
         run_pipeline(once=args.once)
+    elif args.command == "flaggings":
+        from src.utils.viewer import run_viewer
+        run_viewer()
     else:
         parser.print_help()
         sys.exit(1)

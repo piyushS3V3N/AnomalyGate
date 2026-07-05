@@ -4,7 +4,7 @@ import numpy as np
 import pyspark
 from pyspark.sql import SparkSession
 from pyspark.ml import PipelineModel
-from pyspark.sql.functions import col, from_json, length, udf, when, window, count, avg, max
+from pyspark.sql.functions import col, from_json, length, udf, when, window, count, avg, max, concat, lit, substring
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType
 from src.config import Config
 from src.utils.logger import get_logger
@@ -169,9 +169,15 @@ def run_pipeline(once=False):
     # Filter out normal groups, keeping only structural threats
     filtered_df = predictions.filter(col("prediction") == 1.0)
 
-    # Route original raw JSON to preserve all fields for downstream SIEM parsing
+    # Inject the mathematical distance (anomaly score) directly into the raw JSON payload
     siem_payload_df = filtered_df.select(
-        col("@timestamp").alias("key"), col("json_string").alias("value")
+        col("@timestamp").alias("key"), 
+        concat(
+            substring(col("json_string"), 1, length(col("json_string")) - 1),
+            lit(', "anomaly_score": '),
+            col("distance_from_center"),
+            lit('}')
+        ).alias("value")
     )
 
     logger.info(f"Routing critical logs to SIEM topic: {Config.KAFKA_OUTPUT_TOPIC}...")

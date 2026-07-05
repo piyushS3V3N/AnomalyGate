@@ -1,35 +1,56 @@
 # AnomalyGate System Architecture Documentation
 
-**AnomalyGate** is a real-time, ML-driven pre-ingestion security pipeline designed to act as an automated gatekeeper (or "tollbooth") for Security Information and Event Management (SIEM) systems. 
+**AnomalyGate** is a real-time, ML-driven pre-ingestion security pipeline designed to act as an automated gatekeeper for Security Information and Event Management (SIEM) systems. 
 
 By filtering out benign background noise and forwarding only critical security anomalies, AnomalyGate enables organizations to reduce their SIEM data ingestion volumes by **85-90%**, yielding massive license and storage cost savings while maintaining near-zero latency threat detection.
 
 ---
 
-## 1. System Architecture
+## 1. System Architecture (Kubernetes Native)
 
-Below is the high-level data flow diagram of the AnomalyGate pipeline, showing how logs are generated, streamed, classified, and visualized.
+Below is the high-level data flow diagram of the AnomalyGate pipeline, now fully orchestrated on Kubernetes with a centralized NGINX API Gateway.
 
 ```mermaid
-graph TD
-    subgraph Ingestion
-        A[Log Generator / Sources] -->|Bulk Security Logs| B(Kafka Broker: raw-security-logs)
+graph LR
+    subgraph Ingestion [Ingestion Layer]
+        A([Log Sources]) -->|Bulk Logs| N{{"NGINX API Gateway"}}
+        N -->|TCP 9092| B[("Kafka: raw-security-logs")]
     end
     
-    subgraph Processing [PySpark Structured Streaming]
-        B -->|Micro-batch Stream| C[JSON Parsing & Feature Prep]
-        C -->|StringIndexer & VectorAssembler| D[ML Random Forest Model]
-        D -->|Filter: prediction == 1.0| E[Raw Payload Routing]
+    subgraph Processing [PySpark ML Pipeline]
+        B -->|10s Micro-batch| C("Metrics Aggregation")
+        C --> D("VectorAssembler")
+        D --> E{{"K-Means Clustering"}}
+        E -->|Distance > Threshold| F("Inject Anomaly Score")
     end
     
-    subgraph Distribution
-        E -->|Critical Anomalies / Raw JSON| F(Kafka Broker: siem-critical-logs)
-        F -->|Indexer / Connector| G[(Elasticsearch)]
-        G -->|Visualizations| H[Kibana UI]
+    subgraph Storage [SIEM & Visualization]
+        F -->|Critical Alerts| G[("Kafka: siem-critical-logs")]
+        G -->|Logstash| H[("Elasticsearch")]
+        H --> I(["Kibana Dashboard"])
+        
+        N -.->|HTTP 80| I
+        N -.->|HTTP 9200| H
     end
 
-    style Processing fill:#f5f8ff,stroke:#4f86f7,stroke-width:2px
-    style Distribution fill:#f3fcf3,stroke:#2e7d32,stroke-width:2px
+    %% Beautiful custom styles
+    classDef gateway fill:#f39c12,stroke:#e67e22,stroke-width:2px,color:#fff;
+    classDef broker fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff;
+    classDef ml fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff;
+    classDef db fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff;
+    classDef ui fill:#1abc9c,stroke:#16a085,stroke-width:2px,color:#fff;
+    classDef process fill:#95a5a6,stroke:#7f8c8d,stroke-width:1px,color:#fff;
+
+    class N gateway;
+    class B,G broker;
+    class E ml;
+    class H db;
+    class I ui;
+    class C,D,F process;
+
+    style Ingestion fill:#fdfefe,stroke:#bdc3c7,stroke-width:2px,stroke-dasharray: 5 5,rx:10,ry:10
+    style Processing fill:#ebf5fb,stroke:#3498db,stroke-width:2px,rx:10,ry:10
+    style Storage fill:#eafaf1,stroke:#2ecc71,stroke-width:2px,rx:10,ry:10
 ```
 
 ---
@@ -40,93 +61,155 @@ To ensure model accuracy and simulate real-life environments, logs are generated
 
 ### Log Profiles Matrix
 
-| Activity Profile | Event Type | Action | Severity | Bytes Transferred | Target Classification |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Web Browsing** (Benign) | `Network Traffic` / `API Call` | `allowed` (95%) / `denied` (5%) | `low` | 200 - 8,000 B | **Benign** (`is_anomaly = 0`) |
-| **User Login** (Benign) | `User Login` | `allowed` (85%) / `denied` (15%) | `low` (allowed) / `medium` (denied) | 50 - 300 B | **Benign** (`is_anomaly = 0`) |
-| **System Check** (Benign) | `System Check` / `File Access` | `allowed` (99%) / `denied` (1%) | `low` | 1,000 - 25,000 B | **Benign** (`is_anomaly = 0`) |
-| **SQL Injection** (Anomaly) | `API Call` / `SQL Injection Attempt` | `blocked` (70%) / `allowed` (30%) | `high` / `critical` | 15,000 - 85,000 B | **Anomaly** (`is_anomaly = 1`) |
-| **Brute Force** (Anomaly) | `Failed Login` | `denied` (90%) / `allowed` (10%) | `high` | 100 - 1,200 B | **Anomaly** (`is_anomaly = 1`) |
-| **Data Exfil** (Anomaly) | `File Access` | `allowed` | `high` | 500,000 - 10,000,000 B | **Anomaly** (`is_anomaly = 1`) |
-| **Port Scan** (Anomaly) | `Port Scan` | `denied` (80%) / `blocked` (20%) | `medium` | 0 - 150 B | **Anomaly** (`is_anomaly = 1`) |
+| Activity Profile | Log Level | Action | Expected Payload | Target Classification |
+| :--- | :--- | :--- | :--- | :--- |
+| **Web Browsing** (Benign) | `INFO` | Standard API Requests | 200 - 8,000 B | **Benign** |
+| **System Check** (Benign) | `INFO` | `/actuator/health` checks | 1,000 - 25,000 B | **Benign** |
+| **Brute Force** (Anomaly) | `INFO` | Rapid 401 Login Attempts | 100 - 1,200 B | **Anomaly** |
+| **SQL Injection** (Anomaly) | `INFO` | Malicious SQL syntax in URL | 15,000 - 85,000 B | **Anomaly** |
+| **Data Exfil** (Anomaly) | `INFO` | `/download-all` success | > 1,000,000 B | **Anomaly** |
 
 > [!NOTE]
-> Unlike naive rulesets, this classification logic mimics real-world scenarios: for instance, a successful SQL Injection or Data Exfiltration is `allowed` by security gateways but is still flagged as a critical anomaly because of its event profile, payload size, and severity level.
+> Notice how all logs, even severe attacks, are generated as `INFO` logs by the application. Naive rulesets fail here. AnomalyGate identifies threats based on the *mathematical behavior* of the traffic, not arbitrary log levels.
 
 ---
 
 ## 3. Core Components
 
-### A. Apache Kafka Message Broker
-*   **Purpose:** Serves as the high-throughput, low-latency ingestion buffer.
-*   **Topics:**
-    1.  `raw-security-logs` (Source): Ingests the raw log streams from all endpoints, firewalls, and application servers.
-    2.  `siem-critical-logs` (Sink): Receives only the validated anomalous events.
-*   **Design Choice:** Kafka isolates the streaming analytics cluster (Spark) from the log sources, ensuring no data is lost during traffic spikes.
+### A. NGINX API Gateway
+*   **Purpose:** Centralized access point for the entire cluster.
+*   **Routing:** 
+    *   Port 80 -> Kibana UI
+    *   Port 9200 -> Elasticsearch API
+    *   Port 9092 (TCP Stream) -> Kafka Broker
 
-### B. PySpark Structured Streaming Pipeline
-*   **Purpose:** Computes the machine learning inference in real-time.
-*   **Operations:**
-    1.  **Ingestion:** Reads Kafka stream in micro-batches using `startingOffsets` set to `earliest`.
-    2.  **Parsing:** Evaluates the raw JSON input matching the schemas defined in [stream.py](file:///home/pi/Projects/AnomalyGate/src/pipeline/stream.py).
-    3.  **Feature Prep:** Leverages a `PipelineModel` containing `StringIndexer` and `VectorAssembler` stages to turn text fields into numeric vectors.
-    4.  **Classification:** Evaluates features using a trained `RandomForestClassifier`.
-    5.  **Data Preservation:** Filters records where `prediction == 1.0` and sinks the **original raw JSON string** back to the output Kafka topic, preserving all fields (even those not in the ML parsing schema).
+### B. Apache Kafka & Logstash
+*   **Purpose:** High-throughput ingestion buffer and data routing.
+*   **Topics:** `raw-security-logs` (Ingestion) and `siem-critical-logs` (Threat output).
+*   **Logstash:** Consumes the critical topic, cleans PySpark internal vectors, and indexes the alerts into Elasticsearch.
 
-### C. Elasticsearch & Kibana visualization
-*   **Purpose:** Indexes and visualizes the critical anomalies routed to the SIEM.
-*   **Ports:** Elasticsearch is hosted on port `9200` and Kibana runs on port `5601`.
-*   **Design Choice:** Serves as the storage and search dashboard for security analysts to examine raw security alerts.
+### C. PySpark ML Streaming Pipeline
+*   **Purpose:** Computes machine learning inferences in real-time.
+*   **Operation:** Consumes micro-batches, tracks traffic velocity per IP over 10-second sliding windows, applies the ML model, and filters out noise.
 
 ---
 
-## 4. Machine Learning & Feature Engineering
+## 4. In-Depth Mathematical Implementation
 
-The system trains a Random Forest model on the bulk logs. The model processes the following features:
-*   `event_type_idx` (categorical string representation of the source event type)
-*   `action_idx` (categorical string representing allowed/denied/blocked status)
-*   `severity_idx` (categorical string representation of the threat level)
-*   `bytes_transferred` (numeric value representing payload size)
+Unlike static rules engines, AnomalyGate uses **Unsupervised Machine Learning (K-Means Clustering)** to mathematically define the parameters of "normal" traffic. By operating in a continuous multidimensional vector space, the system can detect zero-day anomalies based purely on geometric deviations.
 
-```python
-# Feature assembler definition in train.py
-assembler = VectorAssembler(
-    inputCols=["event_type_idx", "action_idx", "severity_idx", "bytes_transferred"],
-    outputCol="features"
-)
-```
+Below is the step-by-step mathematical implementation of the pipeline.
 
-The trained Random Forest classifier utilizes 20 trees with a depth of 5, providing stable predictions without overfitting on the categorical splits.
+### A. Feature Vector Construction
+For every unique IP address $i$, the system aggregates raw logs over a sliding time window $t$ (10 seconds). From this, we extract a raw feature vector $\mathbf{r}_{i,t} \in \mathbb{R}^4$:
+
+$$ \mathbf{r}_{i,t} = \begin{bmatrix} L \\ C \\ B \\ M \end{bmatrix} $$
+
+Where:
+*   $L$: Encoded severity level index.
+*   $C$: Log count (traffic velocity).
+*   $B$: Average bytes transferred.
+*   $M$: Maximum message length.
+
+### B. Z-Score Standardization (StandardScaler)
+Because the magnitudes of these features vary wildly (e.g., $B$ can be $10^6$ while $C$ is $10^1$), computing direct geometric distance would result in $B$ completely dominating the calculation. 
+
+To solve this, the pipeline applies **Standardization** to map the raw vectors into a normalized feature space. For every feature $j$ in the vector, we compute its $Z$-score using the population mean $\mu_j$ and standard deviation $\sigma_j$ (learned during the training phase):
+
+$$ x_{j} = \frac{r_{j} - \mu_j}{\sigma_j} $$
+
+This yields our final, normalized feature vector $\mathbf{x}_{i,t}$ used for ML inference.
+
+### C. Unsupervised Clustering (K-Means)
+During the batch training phase, the algorithm attempts to partition $N$ normal baseline traffic vectors into $K=4$ distinct behavioral clusters $\mathbf{S} = \{S_1, S_2, S_3, S_4\}$. 
+
+The model solves this by minimizing the **Within-Cluster Sum of Squares (WCSS)**. It finds the optimal cluster centroids (centers) $\boldsymbol{\mu}_k$ by minimizing the following objective function:
+
+$$ \arg\min_{\mathbf{S}} \sum_{k=1}^{K} \sum_{\mathbf{x} \in S_k} \left\| \mathbf{x} - \boldsymbol{\mu}_k \right\|^2 $$
+
+Once training converges, these $K$ centroids represent the mathematical "centers of gravity" for normal enterprise traffic patterns.
+
+### D. Real-Time Geometric Threat Detection
+In production, as the PySpark Structured Stream ingests a new live vector $\mathbf{x}_{live}$, it first determines the nearest normal cluster centroid $\boldsymbol{\mu}_{nearest}$ using the argmin of the distance.
+
+Next, it calculates the precise **Euclidean Distance** $D$ between the live traffic event and that normal baseline center:
+
+$$ D(\mathbf{x}_{live}, \boldsymbol{\mu}_{nearest}) = \sqrt{ \sum_{j=1}^{4} (x_{live, j} - \mu_{nearest, j})^2 } $$
+
+### E. Dynamic Thresholding (The 90th Percentile Rule)
+To prevent hardcoded rules, the `anomaly_threshold` ($\tau$) is calculated dynamically during training. The system evaluates the Euclidean distance of *all* normal training traffic to its respective centroids, generating a probability distribution of normal distances.
+
+The threshold $\tau$ is set exactly at the **90th Percentile** of this distribution:
+
+$$ P(D \le \tau) = 0.90 $$
+
+**The Final Decision Function:**
+$$ f(\mathbf{x}_{live}) = \begin{cases} 1 & \text{if } D > \tau \text{ (Critical Anomaly)} \\ 0 & \text{if } D \le \tau \text{ (Benign Noise)} \end{cases} $$
+
+If $f(\mathbf{x}_{live}) = 1$, the exact mathematical distance $D$ is injected as the `anomaly_score` into the raw JSON payload and routed to the SIEM via Kafka.
 
 ---
 
 ## 5. Operations Guide
 
-### A. Quick Start Commands
-
-To clean checkpoints, generate the bulk traffic logs, train the model, feed Kafka, and run a test query:
+### A. Quick Start (Kubernetes)
 
 ```bash
-# 1. Clean checkpoints and temp data
+# 1. Start the entire Kubernetes cluster (Kafka, ELK, NGINX)
+make setup-k8s
+
+# 2. Port-forward the API Gateway (if running locally without a cloud load balancer)
+kubectl port-forward svc/api-gateway 80:80 9200:9200 9092:9092 -n anomalygate
+
+# 3. Generate data & Train the K-Means Model
 make clean
-
-# 2. Generate bulk real-life log dataset (10,000+ entries)
 make generate
-
-# 3. Train the Random Forest Model
 make train
 
-# 4. Feed logs into the raw-security-logs topic
-make feed
+# 4. Run the live PySpark monitoring stream (Keep this running in terminal 1)
+make run
 
-# 5. Process stream in one-shot mode (exits when done)
-make run-once
-
-# 6. Verify outputs in the critical topic
-make consume
+# 5. Inject traffic into the cluster (Run in terminal 2)
+make feed-k8s
 ```
 
-### B. Dashboard Ports
+### B. Viewing the Alerts
 
-*   **Spark UI Dashboard:** [http://localhost:4040](http://localhost:4040) (active while streaming queries run)
-*   **Kibana UI Console:** [http://localhost:5601](http://localhost:5601) (running inside docker)
+The system comes with a highly optimized CLI viewer that parses the ML outputs and explains *why* the mathematical threshold was crossed.
+
+```bash
+# Real-time Mathematical Threat Alerts Dashboard
+make view-flaggings
+```
+
+*Output Example:*
+```text
+[CRITICAL ALERT] Threat: Brute Force / Credential Stuffing Attack
+    Mathematical Anomaly Score: 7.42 (Threshold crossed)
+    Target IP: 192.168.1.28    | Size:       253B | Source: FilterChainProxy
+    Raw Log:   POST /login HTTP/1.1 - Login attempt status 401
+```
+
+### C. Dashboard Access
+
+Since the NGINX API Gateway unifies the cluster, you can access your SIEM dashboards simply by navigating to:
+*   **Kibana UI Console:** [http://localhost/](http://localhost/)
+*   **Elasticsearch API:** [http://localhost:9200/](http://localhost:9200/)
+
+---
+
+## 6. References & External Documentation
+
+For deeper dives into the technologies and mathematical models powering this pipeline, refer to the following official documentation:
+
+*   **Apache PySpark:**
+    *   [Structured Streaming Programming Guide](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html)
+    *   [PySpark MLlib (Machine Learning Library) Guide](https://spark.apache.org/docs/latest/ml-guide.html)
+*   **Mathematics & Modeling:**
+    *   [K-Means Clustering Explained (Scikit-Learn)](https://scikit-learn.org/stable/modules/clustering.html#k-means)
+    *   [Understanding Euclidean Distance](https://en.wikipedia.org/wiki/Euclidean_distance)
+*   **Infrastructure & Orchestration:**
+    *   [Kubernetes (K8s) Documentation](https://kubernetes.io/docs/home/)
+    *   [Apache Kafka Official Documentation](https://kafka.apache.org/documentation/)
+    *   [Elastic Stack (Elasticsearch, Kibana, Logstash) Guide](https://www.elastic.co/guide/index.html)
+    *   [NGINX Reverse Proxy & API Gateway Guide](https://docs.nginx.com/nginx/admin-guide/web-server/reverse-proxy/)
