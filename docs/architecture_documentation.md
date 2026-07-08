@@ -11,46 +11,52 @@ By filtering out benign background noise and forwarding only critical security a
 Below is the high-level data flow diagram of the AnomalyGate pipeline, now fully orchestrated on Kubernetes with a centralized NGINX API Gateway.
 
 ```mermaid
-graph LR
-    subgraph Ingestion [Ingestion Layer]
-        A([Log Sources]) -->|Bulk Logs| N{{"NGINX API Gateway"}}
-        N -->|TCP 9092| B[("Kafka: raw-security-logs")]
-    end
-    
-    subgraph Processing [PySpark ML Pipeline]
-        B -->|10s Micro-batch| C("Metrics Aggregation")
-        C --> D("VectorAssembler")
-        D --> E{{"K-Means Clustering"}}
-        E -->|Distance > Threshold| F("Inject Anomaly Score")
-    end
-    
-    subgraph Storage [SIEM & Visualization]
-        F -->|Critical Alerts| G[("Kafka: siem-critical-logs")]
-        G -->|Logstash| H[("Elasticsearch")]
-        H --> I(["Kibana Dashboard"])
-        
-        N -.->|HTTP 80| I
-        N -.->|HTTP 9200| H
+flowchart TB
+    subgraph Sources ["Ingestion Layer"]
+        S1[/"Web Servers"/] 
+        S2[/"Firewalls"/]
+        S3[/"Identity/Auth"/]
+        S1 & S2 & S3 -->|"Bulk Logs (JSON)"| GW{{"NGINX API Gateway"}}
     end
 
-    %% Beautiful custom styles
-    classDef gateway fill:#f39c12,stroke:#e67e22,stroke-width:2px,color:#fff;
+    subgraph Streaming ["Message Bus"]
+        GW -->|"kafka-producer"| BR1[("Kafka<br/>raw-security-logs")]
+    end
+
+    subgraph ML ["PySpark ML Pipeline"]
+        direction TB
+        BR1 -->|"10s Micro-batch<br/>Spark Structured Streaming"| AGG["Metrics Aggregation"]
+        AGG --> FEAT["Feature Engineering<br/>+ VectorAssembler"]
+        FEAT --> MODEL{{"K-Means Model"}}
+        MODEL -->|"Distance > Threshold"| SCORE["Anomaly Scoring"]
+        MODEL -.->|"retrain/serve"| REG["Model Registry"]
+    end
+
+    subgraph Egress ["SIEM / Visualization"]
+        SCORE -->|"Critical Alerts"| BR2[("Kafka<br/>siem-critical-logs")]
+        BR2 -->|"Logstash"| ES[("Elasticsearch")]
+        ES --> KIB(["Kibana Dashboard"])
+        GW1 -.->|"HTTP 9200"| ES
+        GW1 -.->|"HTTP 5601"| KIB
+    end
+
+    subgraph Alerting ["Alerting"]
+        BR2 -->|"consumes alerts"| ALERT(["Alert Manager / Pager" ])
+    end
+
+    classDef sz fill:#f39c12,stroke:#e67e22,stroke-width:2px,color:#fff;
     classDef broker fill:#9b59b6,stroke:#8e44ad,stroke-width:2px,color:#fff;
     classDef ml fill:#3498db,stroke:#2980b9,stroke-width:2px,color:#fff;
     classDef db fill:#2ecc71,stroke:#27ae60,stroke-width:2px,color:#fff;
     classDef ui fill:#1abc9c,stroke:#16a085,stroke-width:2px,color:#fff;
-    classDef process fill:#95a5a6,stroke:#7f8c8d,stroke-width:1px,color:#fff;
+    classDef misc fill:#95a5a6,stroke:#7f8c8d,stroke-width:1px,color:#fff;
 
-    class N gateway;
-    class B,G broker;
-    class E ml;
-    class H db;
-    class I ui;
-    class C,D,F process;
-
-    style Ingestion fill:#fdfefe,stroke:#bdc3c7,stroke-width:2px,stroke-dasharray: 5 5,rx:10,ry:10
-    style Processing fill:#ebf5fb,stroke:#3498db,stroke-width:2px,rx:10,ry:10
-    style Storage fill:#eafaf1,stroke:#2ecc71,stroke-width:2px,rx:10,ry:10
+    class GW1 sz;
+    class BR1,BR2 broker;
+    class MODEL ml;
+    class ES db;
+    class KIB,ALERT ui;
+    class AGG,FE,SCORE,MTEL misc;
 ```
 
 ---
@@ -158,8 +164,9 @@ If $f(\mathbf{x}_{live}) = 1$, the exact mathematical distance $D$ is injected a
 # 1. Start the entire Kubernetes cluster (Kafka, ELK, NGINX)
 make setup-k8s
 
-# 2. Port-forward the API Gateway (if running locally without a cloud load balancer)
-kubectl port-forward svc/api-gateway 80:80 9200:9200 9092:9092 -n anomalygate
+# 2. Map the cluster ports to your Mac (Specifically for Lima / non-Minikube environments)
+# Run this in a separate terminal window and keep it open:
+make port-forward
 
 # 3. Generate data & Train the K-Means Model
 make clean

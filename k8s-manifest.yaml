@@ -28,6 +28,8 @@ spec:
           value: "2181"
         - name: ZOOKEEPER_TICK_TIME
           value: "2000"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx256M -Xms256M"
 ---
 apiVersion: v1
 kind: Service
@@ -75,9 +77,11 @@ spec:
         - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
           value: "PLAINTEXT:PLAINTEXT,CONNECTOR:PLAINTEXT"
         - name: KAFKA_INTER_BROKER_LISTENER_NAME
-          value: "PLAINTEXT"
+          value: "CONNECTOR"
         - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
           value: "1"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xmx512M -Xms512M"
 ---
 apiVersion: v1
 kind: Service
@@ -162,6 +166,8 @@ spec:
         env:
         - name: ELASTICSEARCH_HOSTS
           value: "http://elasticsearch:9200"
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=512"
 ---
 apiVersion: v1
 kind: Service
@@ -229,6 +235,9 @@ spec:
       containers:
       - name: logstash
         image: docker.elastic.co/logstash/logstash:8.11.1
+        env:
+        - name: LS_JAVA_OPTS
+          value: "-Xms512m -Xmx512m"
         volumeMounts:
         - name: config-volume
           mountPath: /usr/share/logstash/pipeline/logstash.conf

@@ -166,11 +166,9 @@ def run_pipeline(once=False):
         when(col("distance_from_center") > anomaly_threshold, 1.0).otherwise(0.0)
     )
 
-    # Filter out normal groups, keeping only structural threats
-    filtered_df = predictions.filter(col("prediction") == 1.0)
-
-    # Inject the mathematical distance (anomaly score) directly into the raw JSON payload
-    siem_payload_df = filtered_df.select(
+    # For dashboard demonstration, we are forwarding ALL logs to the SIEM.
+    # We inject the pure mathematical distance (anomaly_score) into the raw JSON payload.
+    siem_payload_df = predictions.select(
         col("@timestamp").alias("key"), 
         concat(
             substring(col("json_string"), 1, length(col("json_string")) - 1),

@@ -2,6 +2,12 @@
 
 .PHONY: setup setup-k8s teardown-k8s generate train run run-once feed consume clean test lint
 
+# Automatically detect and use Lima's KUBECONFIG if running on Mac/Lima
+LIMA_KUBECONFIG = $(HOME)/.lima/default/copied-from-guest/kubeconfig.yaml
+ifneq ("$(wildcard $(LIMA_KUBECONFIG))","")
+    export KUBECONFIG := $(LIMA_KUBECONFIG)
+endif
+
 setup:
 	pip install -r requirements.txt
 	docker compose up -d
@@ -12,6 +18,10 @@ setup-k8s:
 
 teardown-k8s:
 	kubectl delete -f k8s-manifest.yaml
+
+port-forward:
+	@echo "Forwarding API Gateway ports to localhost for Mac/Lima..."
+	kubectl port-forward svc/api-gateway 8080:80 9200:9200 9092:9092 -n anomalygate
 
 generate:
 	python main.py generate 10000

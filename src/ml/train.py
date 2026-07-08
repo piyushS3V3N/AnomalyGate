@@ -10,7 +10,7 @@ from pyspark.sql.types import DoubleType
 from src.config import Config
 from src.utils.logger import get_logger
 
-logger = get_logger("AnomalyGate.Trainer")
+logger = get_logger("AnomalyGate.Trainer ")
 
 
 def train_model():
@@ -31,10 +31,10 @@ def train_model():
     # 2. Ingest data and join with labels immediately before windowing
     raw_df = spark.read.json(Config.DATA_FILE)
     labels_raw_df = spark.read.text(labels_file).withColumnRenamed("value", "is_anomaly_str")
-    
+
     labels_df = labels_raw_df.withColumn("is_anomaly_label", col("is_anomaly_str").cast("double")) \
                              .withColumn("label_id", monotonically_increasing_id())
-                             
+
     raw_indexed_df = raw_df.withColumn("raw_id", monotonically_increasing_id())
     full_labeled_df = raw_indexed_df.join(labels_df, col("raw_id") == col("label_id")).drop("raw_id", "label_id", "is_anomaly_str")
 
@@ -45,7 +45,7 @@ def train_model():
                              .withColumn("bytes_sent", col("context.bytes_sent").cast("double"))
 
     logger.info("Aggregating traffic logs into 10-second behavioral windows per IP...")
-    
+
     # Group logs by IP and window blocks to measure velocity metrics [3]
     windowed_df = time_df.groupBy(
         window(col("event_time"), "10 seconds"),
@@ -87,10 +87,10 @@ def train_model():
         return float(np.linalg.norm(np.array(features.toArray()) - np.array(center)))
 
     distance_udf = udf(calculate_distance, DoubleType())
-    
+
     clustered_df = model.transform(windowed_df)
     df_with_distances = clustered_df.withColumn(
-        "distance_from_center", 
+        "distance_from_center",
         distance_udf(col("features"), col("cluster_prediction"))
     )
 
@@ -100,7 +100,7 @@ def train_model():
 
     # Flag records crossing our mathematical limit boundary
     final_predictions_df = df_with_distances.withColumn(
-        "prediction", 
+        "prediction",
         when(col("distance_from_center") > threshold_value, 1.0).otherwise(0.0)
     )
 
@@ -116,7 +116,7 @@ def train_model():
     # 7. EXPORT MODEL AND THRESHOLD METADATA
     logger.info(f"Saving unsupervised session pipeline to {Config.MODEL_PATH}...")
     model.write().overwrite().save(Config.MODEL_PATH)
-    
+
     threshold_path = Config.MODEL_PATH + "_threshold.txt"
     with open(threshold_path, "w") as f:
         f.write(str(threshold_value))
